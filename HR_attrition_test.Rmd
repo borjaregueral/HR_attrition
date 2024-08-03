@@ -1,0 +1,759 @@
+---
+title: "Survival Analysis"
+author: "Borja Gonzalez del Regueral"
+date: "11/16/2021"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,fig.width = 7.5,fig.height = 3)
+
+```
+
+
+```{r, warning=FALSE, message=FALSE, include=FALSE,paged.print=FALSE}
+library(vcd)
+library(gtsummary)
+library(pander)
+library(survival) 
+library(survminer)
+library(ggplot2) 
+library(dplyr) 
+library(ggfortify)
+library(cowplot)
+library(gridExtra)
+```
+
+
+# Introduction
+
+Data from a fictitious company developed by IBM has been used to understand attrition using survival analysis. The purpose of this paper is to understand the impact of different features on attrition (i.e. job satisfaction, department, etc..) identifying and modeling the most important ones. In this case, data has been imported from Kaggle's repository https://www.kaggle.com/pavansubhasht/ibm-hr-analytics-attrition-datasetData has been downloaded. The datasets containes artifically created human resources data of a company. Data is imported into a data frame from the original `.xlsx` dataset.
+```{r pressure, echo=FALSE}
+#Set up the working environment and read the file
+setwd("/Users/borja_mini/Documents/Survival Analysis")
+data <- read.csv("WA_Fn-UseC_-HR-Employee-Attrition.csv")
+```
+
+# Data cleansing and transformation
+Once the data is imported, it is converted int a dataframe and its main characteristics.
+```{r}
+#Convert the file into a dataframe and check the main characteristics
+df<-data.frame(data, stringsAsFactors = TRUE)
+#Convert character into factor variables
+df<-mutate_if(df, is.character,as.factor)
+#Dimension of the dataframe
+#dim(df)
+```
+The dataframe contains 1470 observations and 35 features with no duplicates and no `Nan` values. The dataframe is cleaned and ready to work from a time-to-event perspective (Survival Analysis). The variables contained in the dataset are:
+```{r}
+#Names of columns in the dataframe
+names(df)
+```
+Not all of them have been coded as required so consulting the code book at https://www.kaggle.com/pavansubhasht/ibm-hr-analytics-attrition-datasetData features will be coded into their corresponding types according to their nature.
+
+Factor variables:
+
+1. Education
+2. PerformanceRating
+3. WorkLifeBalance
+4. EnvironmentSatisfaction
+5. JobInvovlvement
+6. JobSatisfaction
+7. RelationShipSatisfaction
+8. JobLevel
+9. StockOptionLevel
+
+Additionally, some variables are grouped to be used in further analysis:
+
+1. PayGroup
+2. AgeGroup
+3. PercentSalaryHikeGroup
+4. NumCompaniesWorkedGroup
+5. TotalWorkingYearsGroup
+
+A new feature is engineered:
+
+1. PastExperience - considering the total number of years of professional experience minus the number of years at the company
+
+Those variables that are either not adding value into the analysis or not interesting have been discarded:
+
+1. Over18 - Only indicates if it is over 18 and the `Age` feature provides that information.
+2. EmployeeCount, StandardHours - These two variables are constant so they is not providing additional information
+3. EmployeeNumber - Represents the EmployeeID and it is not adding any information.
+4. DailyRate, HourlyRate, MonthlyRate - There is no relationship between them and `MonthlyIncome` and no explanation about their nature in the codebook.
+
+```{r}
+#Change into factors columns that are int with different labels
+df$Education<-factor(df$Education, levels = c(1,2,3,4,5), labels = c("Bellow_College", "College", "Bachelor", "Master", "PhD"))
+df$PerformanceRating<-factor(df$PerformanceRating, levels = c(1,2,3,4), labels = c("Low","Good","Excellent", "Outstanding"))
+df$WorkLifeBalance<-factor(df$WorkLifeBalance, levels = c(1,2,3,4), labels = c("Bad", "Good", "Better", "Best"))
+
+#Change into factor type columns that are still considered int with the same labels
+df$EnvironmentSatisfaction<-factor(df$EnvironmentSatisfaction, levels = c(1,2,3,4), labels = c("Low", "Medium", "High", "Very_High"))
+df$JobInvolvement<-factor(df$JobInvolvement, levels = c(1,2,3,4), labels = c("Low", "Medium", "High", "Very_High"))
+df$JobSatisfaction<-factor(df$JobSatisfaction,levels = c(1,2,3,4), labels = c("Low", "Medium", "High", "Very_High") )
+df$RelationshipSatisfaction<-factor(df$RelationshipSatisfaction, levels = c(1,2,3,4), labels = c("Low", "Medium", "High", "Very_High"))
+
+#Change into factor columns with no label description
+df$JobLevel<-factor(df$JobLevel)
+df$StockOptionLevel<-factor(df$StockOptionLevel)
+
+#Group variables:
+df$PayGroup<-cut(df$MonthlyIncome, breaks = c(0, 2500, 5000, 7500, 10000, 25000), right = FALSE
+                 ,labels = c("<2500","2500-4999","5000-7499", "7500-9999", ">10000"))
+
+df$AgeGroup<-cut(df$Age, breaks = c(18, 20, 30, 40, 70), right = FALSE
+                 ,labels = c("<20","20-29","30-39", ">40"))
+
+df$PercentSalaryHikeGroup<-cut(df$PercentSalaryHike, breaks = c(0, 12, 16, 20, 24, 26), right = FALSE ,labels = c("<12","12-15.9","16-19.9", "20-23.9", ">24"))
+
+df$NumCompaniesWorkedGroup<-cut(df$NumCompaniesWorked, breaks = c(0, 3, 6, 8, 10), right = FALSE ,labels = c("<3","3-5","6-8", ">9"))
+df$TotalWorkingYearsGroup<-cut(df$TotalWorkingYears, breaks = c(0, 5, 10, 15, 20, 50), right = FALSE, labels = c("<5", "5-9", "10-14", "14-19", ">20"))
+
+#Add an additional feature that only considers past experience
+df$PastExperience<-df$TotalWorkingYears-df$YearsAtCompany
+
+#Delete the column that are irrelevant for the analysis
+attr_df<-subset(df, select = -c(Over18, EmployeeCount, StandardHours #The three variables are constant
+                           , EmployeeNumber #Only indicates the EmployeeID
+                           , DailyRate, HourlyRate, MonthlyRate #There is no fixed relationship between them and the monthly income
+                           ))
+```
+
+The structure of the dataframe `attr_df` with 1470 and 34 features (considering the newly created ones).
+```{r}
+#Get a first glimpse of the data
+#str(attr_df)
+```
+# Exploratory Data Analysis
+From the data obtained it can be seen that the average age of the workers in this company is nearly 37 spanning from 30 to 43 with some outsiders spanning from 18 up until 60. The company must be related to Life Science and Medical as most of the workers have that educational background and the biggest department is Research and Development followed by sales. This indicates that the company might be a pharmaceutical company with a high proportion of sales executives. Performance in the company is quite high as indicated by the performance rating where only `excellent` and `outstanding` appear appearing to be little overtime and a high job involvement. The average time for promotion is around 2.4 years and people work for the same manager on average around 4.1 years. Most of the payroll is on a pay bracket between 2500-5000 per month (the monetary unit has not been specified).
+```{r}
+summary(attr_df)
+```
+
+As the study will focus on attrition and the variables/risks that are related to it, some basic figures around attrition are provided:
+```{r}
+
+attrition <- mutate(summarise(group_by(attr_df, Attrition, Gender),
+                              Count=n()),
+                    pct= round(prop.table(Count),2),
+                    y_label_tot = cumsum(Count)-0.3*Count,
+                    y_label_pct = (cumsum(pct)-0.5*pct))
+
+attrition_total<-ggplot(attrition,
+                        aes(x=Attrition, y=Count, fill=Gender))+theme_classic()+
+  scale_fill_brewer(palette = "Pastel1")+theme(legend.position = "none")+
+  geom_col(position = "stack", colour = "Black")+
+  labs(x="Attrition", y="Total Amount")+
+  geom_text(aes(y = y_label_tot,  label = Count), colour = "Black")
+
+attrition_pct<-ggplot(attrition,
+                      aes(x=Attrition, y=pct, fill=Gender))+theme_classic()+
+  geom_col(position = "fill", colour = "Black")+
+  scale_fill_brewer(palette = "Pastel1")+
+  labs(x="Attrition", y="Per 1 basis")+
+  geom_text(aes(y = y_label_pct,  label = pct), colour = "Black")
+
+plot_grid(attrition_total, attrition_pct, align="h", ncol=2)
+```
+
+Attrition in this company is high representing only 16.1% compared to the average 10%-12% in the sector. Furthermore, it can be seen that there is more attrition in women than men although there are less women in total within the company during the period of study. 63% of women decided to leave the company while only 59% decided to stay. To delve deeper into this numbers the gender ration is analysed by department, roles, etc to see if there is more or less attrition according to this factors.
+```{r warning=FALSE}
+
+fig1 <- grid.grabExpr(mosaic( ~ Department + Attrition + Gender, data = attr_df,
+       highlighting = "Gender", highlighting_fill = c("pink", "lightblue"),
+       gp_varnames = gpar(fontsize = 8, fontface = 1),
+       gp_labels = gpar(fontsize = 8),
+       direction = c("v", "h", "v")))
+
+fig2<- grid.grabExpr(mosaic( ~ AgeGroup + Attrition + Gender, data = attr_df,
+       highlighting = "Gender", highlighting_fill = c("pink", "lightblue"),
+       gp_varnames = gpar(fontsize = 8, fontface = 1),
+       gp_labels = gpar(fontsize = 8),
+       direction = c("v", "h", "v")))
+
+grid.arrange(fig1,fig2)
+```
+From the three departments in the company: HR, R&D and sales it seems that attrition is bigger in R&D. This has also to do with the fact that is the biggest one. In this case, there are more male workers leaving the company from this department than female. Furthermore, the sales department follows the same pattern gender-wise but with lower attrition numbers. HR department is the one that moves the balance towards female workers leaving the company more than the male ones. According to their age, most of the population leaving the company are the ones in the age range between "<20" and 29. The first one can be  due to the fact that they are doing a limited in time internship although it is counted as attrition. In the case of workers between 20 and 29 more female than make workers leave the company which reverts in the case of older workers. Considering labor education and job satisfaction:
+
+```{r, warning=FALSE}
+fig3<- grid.grabExpr(mosaic( ~ Education + Attrition + Gender, data = attr_df,
+       highlighting = "Gender", highlighting_fill = c("pink", "lightblue"),
+       gp_varnames = gpar(fontsize = 8, fontface = 1),
+       gp_labels = gpar(fontsize = 8),
+       direction = c("v", "h", "v")))
+
+fig4<- grid.grabExpr(mosaic( ~ JobSatisfaction + Attrition + Gender, data = attr_df,
+       highlighting = "Gender", highlighting_fill = c("pink", "lightblue"),
+       gp_varnames = gpar(fontsize = 8, fontface = 1),
+       gp_labels = gpar(fontsize = 8),
+       direction = c("v", "h", "v")))
+
+grid.arrange(fig3,fig4)
+```
+At a `Bellow_College` educational level the levels of attrition are equivalente from a gender perspective having more attrition than when education increases. The number of employee's leaving the company is higher at a `Bachelor` level only because the number of employees holding a Bachelor is higher than in the rest of the educational levels. The number of male employees that leave the company is higher at a Bachelor and Master levels being higher the number of female workers that leave the company at PhD level and after College. From a `Job Satisfaction` perspective, there number of employees increases with the job satisfaction. Attrition follows an inverse trend regarding the job satisfaction increase as expected. By gender, female workers leaving the company is higher in the case of low, high and very high job satisfaction breaking the trend when the job satisfaction is medium.
+
+# Global Attrition
+To study attrition and the time-to-event risk factors, attrition will be changed into a binary variable. This has not been done earlier to have a better readability on the exploratory data analysis. In this case, attrition will be modeled by "1" and lack of attrition by "0".
+```{r}
+#Change attrition into a binary variable
+attr_df$Attrition <- with(attr_df, ifelse(Attrition == "Yes", 1, 0))
+```
+When building the ´Surv´ object where ´YearsAtCompany´ or tenure within the company is linked to ´Attrition´, all those observations with a tenure lower than 40 years are right censored when they have not left the company (or no attrition has been recorded). The reason for this is that we don't have additional information regarding the event meaning that the event might not have happened, any other event has taken place or that they continue within the company at the date when the data was extracted.
+From the non parametric analysis (Kaplan-Meier) and FH curves results are exactly the same for an overall analysis. It can be seen that the number of censored events is significantly higher during the interval 10-25 years of stay at the company. After that, the number of employees left is low and the number of employees censored is much lower. The impact of censoring the data can be seen as especilly significant durting the period 31-33 years at the company. There is a big vertical jump at year 40 due to the small number of employees left.
+```{r}
+#Fit the KM curve to understand attrition
+fit1 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 1, data = attr_df)
+#Display KM curve
+ggsurvplot(fit1, linetype = 1, legend = "none",
+           break.time.by = 5, palette = "#2E9FDF", surv.plot.height = 0.8,
+           risk.table = "abs_pct", cumevents = T, fontsize = 3, ggtheme = theme_bw())
+```
+From the risk table, it can be seen that during the first five years 39% of the employees are lost being only 61% at risk. This shows a steep decrease from 5-20 years where the number of employees at risk of attrition is low. Furthermore, from the Kaplan-Meier curve it can be seen that the confidence interval opens significantly towards the end of the curve due to the low number of employees staying for that long at the company.
+```{r}
+#Summary of the Kaplan-Meier fit
+summary(fit1, times = c(5, 20, 30))
+```
+Employees working at the company more than 5 years are between 85.5% and 89.2%. As the time within the company grows, the percentage of employees that stay within the company decreases being between 67.2% and 76.2% after 20 years. As seen in the curve, when considering more than 30 years at the company the percentage of employees goes from 51.9% to 72.6% loosing power. To deep dive into the time to attrition and how it impacts different employees and groups within the company both a Demographic analysis and a workplace analysis will be carried out.
+# Demographic Analysis
+In this first analysis, differences by gender and agegroups will be considered:
+```{r}
+#Fit the Kaplan-Meiers curve for Gender
+fit2 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ Gender , data=attr_df)
+#Fit the Kaplan-Meiers curve for AgeGroup
+fit3 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ AgeGroup , data=attr_df)
+
+#Plot both graphs next to each other
+splots <- list()
+#KM curve plot considering gender
+splots[[1]] <- ggsurvplot(fit2, pval = TRUE, pval.size = 3, linetype = 1, legend = "none",
+                          title = "Gender",
+                          legend.labs = c("Male", "Female"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("blue", "red"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+#Customize the plot
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+#Custimize the risk table
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+#KM curve plot considering AgeGroup
+splots[[2]] <- ggsurvplot(fit3, pval = TRUE, pval.size = 3, linetype = 1, legend = "none",
+                          title = "AgeGroup",
+                          legend.labs = c("<br><20", "20-29", "30-39", "<br>>40"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("blue", "red","orange","green", "gray", "yellow"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+#Customize the plot
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+#Custimize the risk table
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+In the Kaplan-Meier curve a cross over between the `male` and `female` curves can be observed which means that there is no proportionality of hazards between them. It seems that attrition is higher in male workers than female workers until they reach 24 years within the company. Once they reach 24 years both remain the same having more censored cases in the case of female workers than male workers. Additionally, the long-rank test shows that there is no A long-rank test presents a p-value of 0.18 (higher than the standard threshold 0.05) which resolves in not having sufficient evidence to say that there is a statistically significant difference in survival between the two gender groups.
+```{r, warning = FALSE}
+#Summarise and see survival for 10 years onwards
+#summary(fit3, time = 10, extend = T)
+```
+From an `AgeGroup` perspective, it can be seem that for the four groups, there is no cross over of curves meaning that there is proportionality in the hazards. Furthermore, it can be seen that staying times (as opposite to attrition) increase with the age range being the time in which half of the population under 20 will stay of 1 year, 11 for employees between 20 and 29 years old and 40 for the eldest ones. Employees between 30-39 don't reach the mean survival value, being also the smallest population among the groups.
+```{r, warning = FALSE}
+#Check significance between the age groups
+age<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ AgeGroup, data = attr_df)
+#Print the table
+pander(age, style = "rmarkdown")
+```
+Considering a staying time within the company of 10 years. The probability of staying more than that increases with age being from 41.9%-66% for workers between 20-29 years, 76.3%-85.1% for employees between 30-39 and 81.3%-89.6% for employees over 40. This means that employees from 30 years old onward will be unlikely to leave the company. In this case, all p-values between groups are lower than the threshold (0.05) meaning that there is a enough evidence to support that there is a significant difference in survival between each of the groups.
+
+```{r}
+#Fit KM curve considering marital status
+fit4 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ MaritalStatus , data=attr_df)
+#Fit KM curve considering the Relationship Satisfaction
+fit5 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ RelationshipSatisfaction , data=attr_df)
+
+#Plot both graphs next to each other
+splots <- list()
+
+#Plot KM curve for Marital Status
+splots[[1]] <- ggsurvplot(fit4, pval = TRUE, pval.size = 3, linetype = 1, legend = "none", title = "Marital Status",
+                          legend.labs = c("Divorced", "Married", "Single"), break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+#Customize Plot
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+#Customize risk table
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8), axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8), axis.text = element_text(size = 6))
+
+#Plot KM curve for Relationship Satisfaction
+splots[[2]] <- ggsurvplot(fit5, pval = TRUE, pval.size = 3, conf.int = T, linetype = 1, legend = "none",
+                          title = "Relationship Satisfaction", legend.labs = c("Low", "Medium", "High", "Very high"), break.time.by = 5,
+                          surv.median.line = "hv", palette = c("orange", "chartreuse", "cyan3", "purple"), risk.table = "abs_pct",
+                          fontsize = 2, ggtheme = theme_bw())
+
+#Customize plot
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5), text = element_text(size = 8))
+
+#Customize risk table
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8), axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8), axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+From a `Marital Status` perspective, the time in which 50% of the population will stay is higher in the case of married employees than single employees. For each time stamp after 10 years, the probability of staying in the company is higher for divorced employees followed by married employees and being lower for single employees. Hazards in the case of single and married employees are proportional but not in the case of divorced and married employees as curves cross each other before the first 10 years. Furthermore, there is not enough evidence to support statistical significance between these two independe groups but there is between divorced-single, single-married
+```{r, warning = FALSE}
+#Check significance between the age groups
+maritals<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ MaritalStatus, data = attr_df)
+#Print the table
+pander(maritals, style = "rmarkdown")
+```
+The probability of staying more than 10 years is between 92% and 91% in the case of divorced employees, 78%-87% for married employees and 59%-71% for singles.
+```{r}
+#Summarise and see survival for 10 years onward
+#summary(fit4, time = 10, extend = T)
+```
+Considering the level of education and educational field, the time to attrition will be analysed to see if there is any impact depending on each of the levels of education and on the education field employees pursued.
+```{r}
+#Fit KM curve for education
+fit6 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ Education, data=attr_df)
+#Fit KM curve for Education Background
+fit7 <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ EducationField, data=attr_df)
+
+#Plot both graphs
+splots <- list()
+#Plot KM curve for education
+splots[[1]] <- ggsurvplot(fit6, pval = TRUE, pval.size = 3, linetype = 1, legend = "none",
+                          title = "Survival Curve - Education",
+                          legend.labs = c("Bellow College", "College", "Bachelor", "MAster", "PhD"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("coral3","darkgoldenrod1", "darkolivegreen2", "darkturquoise", "gold2"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+#Customize plot
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5), text = element_text(size = 8))
+
+#Customize risk table
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8), axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+#Plot KM curve for educational background
+splots[[2]] <- ggsurvplot(fit7, pval = TRUE, pval.size = 3, conf.int = T, linetype = 1, legend = "none",
+                          title = "Survival Curve - Education Field",
+                          legend.labs = c("HR", "Life Science", "Marketing", "Medical", "Other", "Technical"),
+                          break.time.by = 5, surv.median.line = "hv",
+                          palette = c("darkorchid2", "firebrick1","dodgerblue1","darkolivegreen","darkslategray3","darkviolet" ),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+#Customize plot
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5), text = element_text(size = 8))
+
+#Customize risk table
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8), axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8), axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+From an education level perspective, there is no proportionality in the hazards with time as all curves are crossing each other. From an `Education` standpoint the p-value for the long-rank test is bigger than the threshold meaning that there is not enough evidence to support that there is a significant difference in survival between each of the groups. Therefore, the previous education level will not be a factor to keep in mind to improve the attrition rates of the company. Regarding the `Education Field`, the p-value is lower than the threshold from a global perspective but when deep diving into the different groups it can be seen that only for Medical and Technical Degree groups there is enough evidence to prove the statistical significance of each of their survival curves. In any case, the value is too close to the thershold so it could be a false rejection of the long-rank hypotehsis and be like the rest of the different groups under study.
+```{r, warning = FALSE}
+#Check significance between the age groups
+educ_field<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ EducationField, data = attr_df)
+#Print the table
+pander(educ_field, style = "rmarkdown")
+```
+Employees holding a PhD are more likely to stay at the company after 10 years (87.3%) followed by empoyees holding a Master (79%). The rest of the employees (Bachelor, College and Bellow Bachelor) have a lower probability of staying in the company oscillating between 76% and 77%. Regarding the educational field, Medicals are the ones with a higher probability of staying at the company after 10 years (81.4%) and the lowest ones are employees with a technical background (66.7%).
+```{r}
+#Summarise and see survival for 10 years onward
+#summary(fit6, time = 10, extend = T)
+#summary(fit7, time = 10, extend = T)
+```
+# Job Related Features - Kaplan Meier
+Once the demographic aspects have been analysed, the job related aspects will be studied. In this case, the study will focus on the previous number of companies, the total working years, department, pay, environment satisfaction, job satisfaction, overtime, work-life balance. From previous studies, these aspects have been considered to be the most relevant ones and this has been confirmed in a previous data analysis. Performance rating and stock options should have been included but due to the quality of the data both will be ignored. In the first case, because performance rating is only "excellent" or "outstanding" which does not sound as a final and conclusive result. From a stock options perspective only four levels numbered 0-3 have been given with no further explanation.
+```{r}
+fit0w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ NumCompaniesWorkedGroup , data=attr_df)
+fit05w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ TotalWorkingYearsGroup , data=attr_df)
+
+splots <- list()
+splots[[1]] <- ggsurvplot(fit0w, pval = TRUE, pval.size = 3, linetype = 1, legend = "none",
+                          title = "Survival Curve - Past number of Companies",
+                          legend.labs = c("<br><3", "3-5", "6-8", "<br>>9"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("orange","green", "gray", "darkolivegreen1"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+
+splots[[2]] <- ggsurvplot(fit05w, pval = TRUE, pval.size = 3, conf.int = T, linetype = 1, legend = "none",
+                          title = "Work Experience",
+                          legend.labs = c("<br><5", "5-9", "10-14", "15-19", "<br>>20"),
+                          break.time.by = 5, surv.median.line = "hv",
+                          palette = c("blue", "red","orange","green", "gray"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+Regarding the number of companies for which an employee has worked in the past, the number has been clustered into four different categories: less than 3, 3-5, 6-8 and more than 9 companies. After trying different binnings, there is no binning that makes the survival curves of the groups independent, being the one proposed the only one that shows some independence between employees that have worked for less than three companies in the past or between 6-8 companies. Those two groups represent employees in which 50% of them are after 23 years in the former and 40 in the latter. This does not seem relevant in the last case due to the small population of employees that have stayed within the company for so long. From a work experience perspective, experiences has been grouped considering less than 5 years, between 5 and 9, 10-14, 15-10 and 20 or more. This criteria has been chosen to  maximize the number of groups that present a significant difference in their survival curves. In this case, all p-values between groups are lower than the threshold (0.05) meaning that there is a enough evidence to support that there is a significant difference in survival between each of the groups except for the ones that have worked between 10-14 years and 14-19 years.  
+```{r, warning = FALSE}
+#Check significance between the age groups
+past<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ TotalWorkingYearsGroup, data = attr_df)
+#Print the table
+pander(past, style = "rmarkdown")
+```
+Employees with more than 20 years of professional experience have a probability of staying at the company after 10 years of approx. 97%. This probability drops to between 53% and 63% in the case of professionals with less experience <5 and between 5.9 respectively.  
+```{r}
+#Summarise and see survival for 10 years onward
+#summary(fit05w, time = 10, extend = T)
+```
+Considering the department and the pay of the employees of the company, this study will try to see if there is significant difference between each of the departments and pay range in the likelihood to leave the company for employees.
+
+```{r}
+fit1w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ Department , data=attr_df)
+fit2w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ PayGroup , data=attr_df)
+
+splots <- list()
+splots[[1]] <- ggsurvplot(fit1w, pval = TRUE, pval.size = 3, linetype = 1, legend = "none",
+                          title = "Survival Curve - Department",
+                          legend.labs = c("HR", "R&D", "Sales"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("orange","green", "gray"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+
+splots[[2]] <- ggsurvplot(fit2w, pval = TRUE, pval.size = 3, conf.int = T, linetype = 1, legend = "none",
+                          title = "PayGroup - Monthly Income (in thousands)",
+                          legend.labs = c("<br><2.5k", "2.5k-4.9k", "5k-7.49k", "7.5k-10k", "<br>>10k"),
+                          break.time.by = 5, surv.median.line = "hv",
+                          palette = c("blue", "red","orange","green", "gray", "yellow"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+There is not enough evidence to support the statistical significance of the difference in the survival curves between departments. Only R&D and sales are significantly different in terms of their survival curves. In this cases, the probability of staying more than ten years is lower in the sales department (75%) than in the R&D department (79%). Regarding the different pay groups that have been chosen, survival curves are significantly different for all pay groups except for the 5k-7.5k and 7.5k-10k. Merging both groups into a single one as well as trying different splits have not allowed to improve the statistical significance of these groups survival curves. In this cases, it can be observed that the higher the pay the chances of staying at the company after ten years improve, except for the bands 5k-7.5k and 7.5k-10k in which the order is violated. In this case the first groups presents a probability of 84% higher than the probability of the second group 76% of staying within the company after ten years.
+```{r, warning = FALSE}
+#Check significance between the age groups
+dep<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ Department, data = attr_df)
+pay<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ PayGroup, data = attr_df)
+#Print the table
+pander(c(dep, pay), style = "rmarkdown")
+```
+
+Considering both the job and environment satisfaction at the company, data shows that both have only four levels ranging from low to very high. In this case, the even number of levels could bias the answer provided by employees to higher levels as they do not have a neutral option.
+```{r}
+fit3w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ EnvironmentSatisfaction, data=attr_df)
+fit4w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ JobSatisfaction, data=attr_df)
+
+splots <- list()
+splots[[1]] <- ggsurvplot(fit3w, linetype = 1, legend = "none",
+                          title = "Survival Curve - Environment Satisfaction",
+                          legend.labs = c("Low", "Medium", "High", "Very high"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("coral3","darkgoldenrod1", "darkolivegreen2", "darkturquoise"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+
+splots[[2]] <- ggsurvplot(fit4w, conf.int = T, linetype = 1, legend = "none",
+                          title = "Survival Curve - Job Satisfaction",
+                          legend.labs = c("Low", "Medium", "High", "Very high"),
+                          break.time.by = 5, surv.median.line = "hv",
+                          palette = c("darkorchid2", "firebrick1","dodgerblue1","darkolivegreen"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+From an environment satisfaction perspective, only the one that is low presents enough evidence to show that the difference between survival curves is statistically significant. As for the job satisfaction happens with the low and the very high levels. There is a 68% probability that employees considering the environment satisfaction low are retained at the company for more than ten years, staying half of them for more than 30 years. This is shocking from a standard environment satisfaction perspective and would require further investigation in subsequent iterations with the company. From a job satisfaction perspective, retention for more than ten years ranges from 69% to 83% increasing in the same direction as the job satisfaction (as it happens with the environment satisfaction)
+```{r}
+#Check significance between the age groups
+envsat<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ EnvironmentSatisfaction, data = attr_df)
+jobsat<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ JobSatisfaction, data = attr_df)
+#Print the table
+pander(c(envsat, jobsat), ncol = 2, style = "rmarkdown")
+```
+Considering overtime and work life balance as factors that can be related with employees leaving a company, it can be seen that the survival curves of overtime and not overtime show enough evidence to support the statistical significance of both curves. As for the work life balance case, only the one that is associated to bad is significantly different from the rest. As expected, employees that work overtime are more prone to leave the company earlier than those who do not. Nevertheless, there is no additional detail on the meaning of overtime for this company and the number of hours of overtime per employee. Questions regarding its regularity, number of hours and their impact in attrition cannot be answered from the data provided. The impact of overtime can be seen in the probability of staying longer than ten years at the company, without overtime this probability is around 86% which drops to 60% in the case there is overtime. The median survival for the group without overtime is round 40 years while in the case of the ones with overtime, this time is significantly reduced to 25 years. 
+```{r}
+fit5w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ OverTime , data=attr_df)
+fit6w <- survfit(Surv(YearsAtCompany, Attrition == 1, type = "right" ) ~ WorkLifeBalance , data=attr_df)
+
+splots <- list()
+splots[[1]] <- ggsurvplot(fit5w, pval = TRUE, pval.size = 3, linetype = 1, legend = "none",
+                          title = "Survival Curve - Overtime",
+                          legend.labs = c("No Overtime", "Overtime"),
+                          break.time.by = 5, surv.median.line = "hv", conf.int = TRUE,
+                          palette = c("darkolivegreen2", "darkturquoise"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[1]]$plot <- splots[[1]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[1]]$table <- splots[[1]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+
+splots[[2]] <- ggsurvplot(fit6w, conf.int = T, linetype = 1, legend = "none",
+                          title = "Survival Curve - Work-Life Balance",
+                          legend.labs = c("Bad", "Good", "Better", "Best"),
+                          break.time.by = 5, surv.median.line = "hv",
+                          palette = c("darkorchid2", "firebrick1","dodgerblue1","darkolivegreen"),
+                          risk.table = "abs_pct", fontsize = 2, ggtheme = theme_bw())
+
+splots[[2]]$plot <- splots[[2]]$plot + theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5),
+                                             text = element_text(size = 8))
+
+splots[[2]]$table <- splots[[2]]$table + theme(plot.title = element_text(size = 8),
+                                               axis.title.x = element_text(size = 8),
+                                               axis.title.y = element_text(size = 8),
+                                               axis.text = element_text(size = 6))
+
+# Arrange multiple ggsurvplots and print the output
+arrange_ggsurvplots(splots, print = TRUE, ncol = 2, nrow = 1, risk.table.height = 0.4)
+```
+From a work life balance perspective, only the group with a bad work life balance present enough evidence to have a statistically significant different survival curve. In their case, the probability of staying at the company for more than ten years is of 59%. This probability increases with the level of satisfaction excepct for the ones that have the best work life balance for which it drops to similar levels as the ones with a good work life balance (around 75%). 
+```{r, warning=FALSE}
+#Check significance between the age groups
+wlb<-pairwise_survdiff(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ WorkLifeBalance, data = attr_df)
+#Print the table
+pander(wlb, ncol = 2, style = "rmarkdown")
+```
+
+# Cox Regression
+Following on our previous analysis of the factors that can impact attrition for the given company, three cox regression models will be built to identify the most important features affecting attrition. In this case and keeping the previous features, a `demographics` model will be built considering all the features and susequent fine tuning will be done until the best possible model explaining the dataset with this variables will be obtained. The same study will be done considering only the working factors `work` and finally a mixed model `mixed` combining both factors will be discussed. Models will be compared between and among them minimizing AIC to achieve the best possible model. The purpose of this section is not to predict attrition but to model and explain the key factors that affect attrition in the company.
+
+Starting with the demographics model, all the factors previously seen will be introduced including `Gender`, grouped `Age`, `Marital Status`, `Relationship Satisfaction`, `Education`, `Education Field`, and grouped `Total Working Years`.
+```{r}
+demographics<-coxph(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 
+                      Gender
+                    +AgeGroup
+                    +MaritalStatus 
+                    +RelationshipSatisfaction
+                    +Education
+                    +EducationField
+                    +strata(TotalWorkingYearsGroup)
+                    , data = attr_df)
+```
+
+From a proportionality of the risks of the cox regression model for the selected covariants considering the grouped `Total Working Years` is not fulfilling the requirement which is making the global model not proportional (the same happens when it is ungrouped). As all p-values are higher than 0.05 except of the aforementioned covariates, it seems that there are no time dependent coefficients being hazard rates constant in time. To improve the model the grouped `Total Working Years` has been stratified producing a different baseline hazard for each level of the variable and then combining them from a likelihood framework perspective. In this case, when checking the assumption of the cox model, it significantly improves fulfilling through the extended cox model the proportionality assumptions. In this model, concordance has a value of 0.626 within the range of 0.6-0.8 with a se 0.022 being significant.
+```{r}
+#Test proportionality of hazards for the cox model
+test.demographics<-cox.zph(demographics, transform = "km", global = T)
+test.demographics
+#Calculate AIC for the model
+AIC(demographics)
+```
+From the model it can be seen that `Gender`, `Education` and `Relationship Satisfaction`are not significant in the model. Nevertheless, Gender continues not to be significant but it can be seen that the hazard ratio between male and female is 1.16 being the risk for attrition higher in male population. From an `AgeGroup` perspective, compared to the population under 20, the risk of leaving the company decreases with age being all of them significant. From a `Marital Status` perspective, being single is more risky than being married compared to the divorced status being the hazard risk 2.35 times in the former and 1.18 times in the latter. From a `Relationship Satifaction Perspective` all of them present the similar risk irrespective of their satisfaction and from their educational background none of the different status are significant and risk increases with education except for PhD where the risk of leaving the company is lower than for employees with bellow college education. From an `Educational Field` perspective, employees with a Marketing and Technical Degrees show similar risks lower than the ones of Human Resources (0.46%-0.49%) being lower for all other groups. From a `Total Working Years` perspective those working for more than 5 years present a lower risk than the ones working longer being the ones that worked from 5-9 years the ones that present more risk.
+```{r, message = FALSE}
+tbl_regression(demographics, exponentiate = T)
+```
+
+From the initial model, lets improve the explanatory power by considering the minimization of AIC removing those covariates that are introducing noise or altering other covariates. A backward and forward step improvement of the model has been tried removing `Gender`, `Education` and `Relationship Satisfaction`. The final demographics model provides an AIC of 2369.
+```{r}
+#Fit the new model considering only the significant covariates
+demographics2<-coxph(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 
+                    AgeGroup
+                    +MaritalStatus 
+                    +EducationField
+                    +strata(TotalWorkingYearsGroup)
+                    , data = attr_df)
+
+#Test proportionality of hazards for the cox model
+test.demographics2<-cox.zph(demographics2, transform = "km", global = T)
+test.demographics2
+
+#AIC
+AIC(demographics2)
+```
+
+## Work related features for modelling
+The model now is fit considering only the work covariates that were described in the previous section. The covariates that will be used are: grouped `NumCompaniesWorked`, `TotalWorkingYears`, `Department`, `MonthlyIncome`, `EnvironmentSatisfaction`, `JobSatisfaction`, `OverTime`, `WorkLifeBalance`. Several manipulations will be done to the variables to fulfill cox regression model assumptions and to improve the AIC of the model having as a threshold the one obtained using only demographics.
+
+In this case the covariate `NumCompaniesWorkedGroup` has been stratified as it does not fulfill the proportionality of hazards and significantly improving the model from an AIC perspective. The work model with this change presents a better AIC than the demographics one. Furthermore, `MonthlyIncome` has been rescaled into thousands making it fulfill the hazards proportionality requirements and not being time-dependent. It also brings a lower AIC value to the model 
+```{r}
+#Fit the model considering all the previous covariates
+work<-coxph(Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 
+            strata(NumCompaniesWorkedGroup)
+            +TotalWorkingYears
+            +Department
+            +I(MonthlyIncome/1000)
+            +EnvironmentSatisfaction
+            +JobSatisfaction
+            +OverTime
+            +WorkLifeBalance
+            , data = attr_df)
+```
+
+It can be seen that all of them fulfil the proportionality and independence of time requirements of the model and that the extended cox model with the stratified `NumCompaniesWorked` indicating the past experience significantly improves it. Additional stratification has been tried with `JobSatisfaction` among other variables although there was no clear sign at first for the need of it and all results are worse than the one chosen. 
+```{r}
+#Test proportionality of hazards for the cox model
+test.work<-cox.zph(work, transform = "km", global = T)
+test.work
+#Calculate AIC for the model
+AIC(work)
+```
+As we have fitted a stratified model on the `NumCompaniesWorkedGroup`, it can be seen that per year of experience the risk of attrition is lower (as the HR is lower than 1). The same happends with monthly income as per 1000 of additional income the risk of leaving the company is lower. In other words, per every 1000 decrease in salary the risk of leaving the company increases by 8.6%. This is not the case when somebody is working in the sales department where the risk of leaving the company is 1.22 compared to the risk of somebody working in HR (used as reference). Regarding environmental and job satisfaction, the better the satisfaction of the employee the lower the risk to leave the company. In relative terms and compared to the highest environmental satisfaction the risk of leaving the company for those employees with lower stratification is 2.32 times the risk of leaving the company for those employees with the highest levels of environmental satisfaction. Regarding job satisfaction the ratio is even higher being the risk 2.77 for employees with a lower level of satisfaction compared to the ones with the highest.
+```{r, message = FALSE}
+#Print results
+tbl_regression(work, exponentiate = T)
+```
+Considering overtime, this is a factor to keep in mind as is the one that is having from the work related ones the highest impact on attrition, being the risk of those employees with overtime 3.56 times the risk of attrition for the rest of employees. Regarding work life balance, similar effects can be seen as with job and environmental satisfaction but with a slightly lower risk ratio. The risk of attrition for employees with a poor work life balance is 2 times the ones with the best work life balance. Trying to improve the model through backward, forward and both directions feature selection is not improving the model. It can be argued that `Department` is not significant and should be dropped but it worsens the model therefore the model that has been fitted is kept with an AIC of 2119.
+
+## Mixed Model Demographics + Work
+After considering both models independently, a mixed model combining all features from the demographic model and from the work model will be considered trying to improve the explanatory power. This nested model contains all the features with their respective changes from the previous two models (stratification, rescaling, etc) as a starting point. In this global model both the model and each of the covariates independently initially fulfill the proportionality requirements. The only one closer to the threshold is AgeGroup (0.077). The AIC of the initial mixed model is 1747.
+```{r}
+#Fit the model considering work and demographics covariates
+mixed<-coxph(formula = Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 
+             +AgeGroup
+             +MaritalStatus 
+             +EducationField
+             +strata(TotalWorkingYearsGroup)
+             +strata(NumCompaniesWorkedGroup)
+             +Department
+             +I(MonthlyIncome/1000)
+             +EnvironmentSatisfaction
+             +JobSatisfaction
+             +OverTime
+             +WorkLifeBalance, data = attr_df)
+
+mixed2<-coxph(formula = Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 
+             +AgeGroup
+             +MaritalStatus 
+             +strata(TotalWorkingYearsGroup)
+             +strata(NumCompaniesWorkedGroup)
+             +Department
+             +I(MonthlyIncome/1000)
+             +EnvironmentSatisfaction
+             +JobSatisfaction
+             +OverTime
+             +WorkLifeBalance, data = attr_df)
+```
+
+```{r}
+#Test proportionality of hazards for the cox model
+test.mixed2<-cox.zph(mixed2, transform = "km", global = T)
+test.mixed2
+#Calculate AIC for the model
+AIC(mixed2)
+```
+In this case the power of `EducationField` will be tested to see if it is better to keep it or remove it from the model. Following the likelihood ratio test, it can be seen that `EducationFiled` is not adding value to the model as we fail to reject the null hypothesis (p=0.3691 > 0.05) where the beta of `EducationFiled` is zero. AIC is reduced from 1747 to 1743 improving the explantory power of the model.
+```{r}
+#Check the Likelihood ration with and without EducationField
+#anova(mixed2, mixed, test = "LRT")
+```
+When applying step model selection, no covariates are removed from the current model. The oncly covariate that presents a value closer to the threshold from the hazards proportionality test for the cox regression model is `AgeGroup` which will be stratified to see if there is a significant improvement.
+```{r}
+mixed3<-coxph(formula = Surv(YearsAtCompany, Attrition == 1, type = "right") ~ 
+             +strata(AgeGroup)
+             +MaritalStatus 
+             +strata(TotalWorkingYearsGroup)
+             +strata(NumCompaniesWorkedGroup)
+             +Department
+             +I(MonthlyIncome/1000)
+             +EnvironmentSatisfaction
+             +JobSatisfaction
+             +OverTime
+             +WorkLifeBalance, data = attr_df)
+```
+
+```{r, message = FALSE}
+#Print results
+tbl_regression(work, exponentiate = T)
+```
+
+Conclusions regarding the hazard ratios are similar to the ones obtained in previous models with no signficant changes. In this case, all covariates and the model fulfill the hazard proportionality requirements of the cox regression model (0.68). There is a significant improvement in terms of AIC with a reduction from 1743 to 1323 when `AgeGroup` is stratified. From a residuals perspective comparing the Shoenfeld residuals nor dfbetas residuals show neither deviation from zero nor significant spikes in any of the variables and overall for the model so the model is adequately fit for all the variables selected.
+
+```{r, message=FALSE, warning=FALSE}
+#Shoenfeld residuals
+ggcoxdiagnostics(mixed3, type = "schoenfeld")
+#Dfbetas residuals
+ggcoxdiagnostics(mixed3, type = "dfbetas")
+```
+Grouping all the models that have been tried:
+
+1. M1 = demographic covariates only
+2. M2 = demographic covariates without `Gender`, `Education` and `Relationship Satisfaction`
+3. M3 = work covariates only
+4. M4 = mixed model (M2+M4)
+5. M5 = M4 without `EducationField`
+6. M6 =  M5 with stratified `Age Group`
+
+```{r}
+fits<- list(M1 = demographics, M2 = demographics2 , M3 = work, M4 = mixed, M5 = mixed2, M6 = mixed3)
+sapply(fits, AIC)
+```
+As it can be seen there has been a significant decrease of the AIC improving the models explanatory power by maximizing likelihood of the model while reducing the number of covariates. In this case, from an initial model with ony the demographic variables it has been reduced AIC has been almost reduced by 50% through the stratification of certain variables and changing the scales of others. The final explanatory model that would be used to define the cox regression model of attrition with the following explanatory covariates:
+
+1. strata(AgeGroup)
+2. MaritalStatus
+3. strata(TotalWorkingYearsGroup)
+4. strata(NumCompaniesWorkedGroup)
+5. Department
+6. I(MonthlyIncome/1000)
+7. EnvironmentSatisfaction
+8. JobSatisfaction
+9. OverTime
+10. WorkLifeBalance
+ 
+# Conclusions
+Throughout this study a non-parametric and semi parametric analysis of the different factors impacting the time to attrition has been carried out. It can be seen that in the company under study, gender is not significant as well as education background. There are different hazard baselines regarding the age group in which the employees can be categorized into, or the past experience, number of companies for which they worked. Having this in mine, the most significant covariates are their marital status having more risk of attrition when employees are single, the department in which they work being sales the one that presents a higher turnover, the environmental satisfaction and job satisfaction with a risk of leaving at least doubles the  when satisfaction drops to low. Regarding overtime, this is one of the covariates that represent the highest risk of attrition with over 3 times more risk of leaving between employees that have been working overtime compared to other employees as well as work life balance.
